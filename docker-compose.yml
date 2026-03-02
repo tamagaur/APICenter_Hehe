@@ -1,0 +1,125 @@
+# =============================================================================
+# Docker Compose — API Center Infrastructure (Dynamic Service Registry)
+# =============================================================================
+# Spins up the API Center alongside Kafka (event streaming), Redis (registry
+# cache), and Kafka UI (monitoring). Run with: docker-compose up -d
+#
+# Kafka runs in KRaft mode (no Zookeeper needed).
+# Redis is used as a shared cache for the Dynamic Service Registry.
+# =============================================================================
+
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------------------------
+  # API Center — The central gateway & dynamic service registry
+  # ---------------------------------------------------------------------------
+  api-center:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - api-center-network
+
+  # ---------------------------------------------------------------------------
+  # Kafka (KRaft mode) — Event streaming platform for inter-tribe communication
+  # ---------------------------------------------------------------------------
+  # KRaft = Kafka Raft. Kafka manages its own metadata internally using the
+  # Raft consensus protocol, eliminating the need for a separate Zookeeper
+  # container. This is the standard since Kafka 3.3+ and Zookeeper is
+  # deprecated as of Kafka 4.0.
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: confluentinc/cp-kafka:7.7.0
+    ports:
+      - "9092:9092"
+    environment:
+      # ---- KRaft Configuration ----
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+
+      # ---- Listeners ----
+      # PLAINTEXT  = internal Docker network (other containers use kafka:29092)
+      # HOST       = host machine access (localhost:9092)
+      # CONTROLLER = KRaft internal controller communication
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:9093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # ---- Broker Settings ----
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - api-center-network
+
+  # ---------------------------------------------------------------------------
+  # Redis — Shared registry cache for multi-instance API Center deployments
+  # ---------------------------------------------------------------------------
+  # Redis stores the Dynamic Service Registry as a shared cache so that
+  # multiple API Center instances stay in sync. If Redis is not available
+  # the registry falls back to in-memory-only mode.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - redis-data:/data
+    networks:
+      - api-center-network
+
+  # ---------------------------------------------------------------------------
+  # Kafka UI — Web interface to monitor Kafka topics and messages
+  # ---------------------------------------------------------------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: api-center-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      - kafka
+    networks:
+      - api-center-network
+
+networks:
+  api-center-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+    driver: local
