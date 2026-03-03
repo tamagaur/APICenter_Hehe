@@ -4,18 +4,18 @@
 // Bootstraps the NestJS application with all security middleware, connects
 // to Kafka, and starts listening for HTTP requests.
 //
-// NESTJS vs EXPRESS:
-//  NestJS wraps Express under the hood but adds:
-//  - Dependency Injection (DI) — services are injected, not imported as singletons
-//  - Decorators — @Controller, @Injectable, @Module, @Guard, @Interceptor, @Pipe
-//  - Modular architecture — each domain is a self-contained module
-//  - Built-in support for guards, interceptors, pipes, filters, middleware
+// TRACING: OpenTelemetry is initialized BEFORE NestFactory.create() so that
+// it can patch Node.js modules (http, express) before they are first required.
 //
 // GRACEFUL SHUTDOWN:
 //  NestJS has built-in shutdown hooks. When the process receives SIGTERM or
 //  SIGINT, the framework calls onModuleDestroy() / onApplicationShutdown()
 //  on every module that implements the lifecycle interface.
 // =============================================================================
+
+// ---- Initialize tracing FIRST (before any other imports that use http) ----
+import { initTracing } from './tracing';
+initTracing();
 
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
@@ -25,6 +25,7 @@ import { LoggerService } from './shared/logger.service';
 import { AllExceptionsFilter } from './shared/filters/all-exceptions.filter';
 import { CorrelationIdInterceptor } from './shared/interceptors/correlation-id.interceptor';
 import { AuditLogInterceptor } from './shared/interceptors/audit-log.interceptor';
+import { MetricsInterceptor } from './metrics/metrics.interceptor';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
@@ -62,7 +63,8 @@ async function bootstrap() {
   // ---------------------------------------------------------------------------
   const correlationInterceptor = app.get(CorrelationIdInterceptor);
   const auditInterceptor = app.get(AuditLogInterceptor);
-  app.useGlobalInterceptors(correlationInterceptor, auditInterceptor);
+  const metricsInterceptor = app.get(MetricsInterceptor);
+  app.useGlobalInterceptors(correlationInterceptor, auditInterceptor, metricsInterceptor);
 
   // ---------------------------------------------------------------------------
   // Global Exception Filter — catch all unhandled errors

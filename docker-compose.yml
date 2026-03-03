@@ -1,8 +1,11 @@
 # =============================================================================
 # Docker Compose — API Center Infrastructure (Dynamic Service Registry)
 # =============================================================================
-# Spins up the API Center alongside Kafka (event streaming), Redis (registry
-# cache), and Kafka UI (monitoring). Run with: docker-compose up -d
+# Spins up 3 API Center instances behind an NGINX load balancer, alongside
+# Kafka (event streaming), Redis (registry cache + rate limiting),
+# Prometheus + Grafana (metrics), Jaeger (tracing), and Kafka UI (monitoring).
+#
+# Run with: docker-compose up -d
 #
 # Kafka runs in KRaft mode (no Zookeeper needed).
 # Redis is used as a shared cache for the Dynamic Service Registry.
@@ -10,30 +13,70 @@
 
 version: '3.8'
 
+# ---------------------------------------------------------------------------
+# Shared env/healthcheck anchors for the 3 API Center instances
+# ---------------------------------------------------------------------------
+x-api-center-common: &api-center-common
+  build: .
+  env_file:
+    - .env
+  depends_on:
+    kafka:
+      condition: service_healthy
+    redis-cache:
+      condition: service_healthy
+    redis-rate-limit:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/v1/health/live"]
+    interval: 15s
+    timeout: 5s
+    retries: 3
+    start_period: 30s
+  restart: unless-stopped
+  networks:
+    - api-center-network
+
 services:
   # ---------------------------------------------------------------------------
-  # API Center — The central gateway & dynamic service registry
+  # NGINX — Load balancer distributing traffic across 3 gateway instances
   # ---------------------------------------------------------------------------
-  api-center:
-    build: .
+  nginx:
+    image: nginx:1.25-alpine
     ports:
-      - "3000:3000"
-    env_file:
-      - .env
+      - "3000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      kafka:
+      api-center-1:
         condition: service_healthy
-      redis:
+      api-center-2:
+        condition: service_healthy
+      api-center-3:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health/live"]
-      interval: 15s
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/nginx-health"]
+      interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 30s
     restart: unless-stopped
     networks:
       - api-center-network
+
+  # ---------------------------------------------------------------------------
+  # API Center — 3 stateless gateway instances (no session stickiness needed)
+  # ---------------------------------------------------------------------------
+  api-center-1:
+    <<: *api-center-common
+    container_name: api-center-1
+
+  api-center-2:
+    <<: *api-center-common
+    container_name: api-center-2
+
+  api-center-3:
+    <<: *api-center-common
+    container_name: api-center-3
 
   # ---------------------------------------------------------------------------
   # Kafka (KRaft mode) — Event streaming platform for inter-tribe communication
@@ -80,16 +123,31 @@ services:
       - api-center-network
 
   # ---------------------------------------------------------------------------
-  # Redis — Shared registry cache for multi-instance API Center deployments
+  # Redis (Rate Limiting) — Dedicated Redis for ThrottlerGuard / rate limiting
   # ---------------------------------------------------------------------------
-  # Redis stores the Dynamic Service Registry as a shared cache so that
-  # multiple API Center instances stay in sync. If Redis is not available
-  # the registry falls back to in-memory-only mode.
-  # ---------------------------------------------------------------------------
-  redis:
+  redis-rate-limit:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "6380:6379"
+    command: redis-server --loglevel warning --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - api-center-network
+
+  # ---------------------------------------------------------------------------
+  # Redis (Cache) — Registry persistence, token caching
+  # ---------------------------------------------------------------------------
+  # Redis stores the Dynamic Service Registry so that services survive
+  # gateway restarts without re-registering. Also used for token caching.
+  # ---------------------------------------------------------------------------
+  redis-cache:
+    image: redis:7-alpine
+    ports:
+      - "6381:6379"
     command: redis-server --save 60 1 --loglevel warning
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -97,7 +155,7 @@ services:
       timeout: 5s
       retries: 3
     volumes:
-      - redis-data:/data
+      - redis-cache-data:/data
     networks:
       - api-center-network
 
@@ -116,10 +174,59 @@ services:
     networks:
       - api-center-network
 
+  # ---------------------------------------------------------------------------
+  # Prometheus — Metrics collection & alerting
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      nginx:
+        condition: service_healthy
+    networks:
+      - api-center-network
+
+  # ---------------------------------------------------------------------------
+  # Grafana — Metrics visualization dashboards
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.4.0
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - api-center-network
+
+  # ---------------------------------------------------------------------------
+  # Jaeger — Distributed tracing UI & collector
+  # ---------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.55
+    ports:
+      - "16686:16686"    # Jaeger UI
+      - "14268:14268"    # HTTP collector (traces ingestion)
+      - "4318:4318"      # OTLP HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks:
+      - api-center-network
+
 networks:
   api-center-network:
     driver: bridge
 
 volumes:
-  redis-data:
+  redis-cache-data:
+  prometheus-data:
+  grafana-data:
     driver: local

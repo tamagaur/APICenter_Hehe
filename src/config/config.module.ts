@@ -1,16 +1,18 @@
 // =============================================================================
 // src/config/config.module.ts — Configuration module
 // =============================================================================
-// Provides the ConfigService as a global singleton.
-// Any module that needs config simply injects ConfigService.
+// Provides the ConfigService and SecretsService as global singletons.
+// SecretsService runs first (OnModuleInit) to load AWS secrets into process.env
+// before ConfigService reads them.
 // =============================================================================
 
 import { Global, Module } from '@nestjs/common';
 import { ConfigService } from './config.service';
+import { SecretsService } from './secrets.service';
 
 @Global()
 @Module({
-  providers: [ConfigService],
-  exports: [ConfigService],
+  providers: [SecretsService, ConfigService],
+  exports: [ConfigService, SecretsService],
 })
 export class ConfigModule {}

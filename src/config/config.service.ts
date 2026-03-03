@@ -42,9 +42,12 @@ export class ConfigService {
   // ---- Platform Admin Secret ----
   readonly platformAdminSecret: string = process.env.PLATFORM_ADMIN_SECRET || '';
 
-  // ---- Redis (optional — registry cache) ----
+  // ---- Redis (split responsibilities) ----
   readonly redis = {
-    url: process.env.REDIS_URL || 'redis://localhost:6379',
+    /** Rate limiting + throttler (dedicated instance) */
+    rateLimitUrl: process.env.REDIS_RATE_LIMIT_URL || 'redis://localhost:6380',
+    /** Token cache + registry persistence (dedicated instance) */
+    cacheUrl: process.env.REDIS_CACHE_URL || 'redis://localhost:6381',
   };
 
   // ---- Supabase (optional — persistent registry storage) ----

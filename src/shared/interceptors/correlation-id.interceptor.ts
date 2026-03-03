@@ -22,7 +22,8 @@ import {
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { Request, Response } from 'express';
-import crypto from 'crypto';
+import crypto from 'node:crypto';
+import { trace } from '@opentelemetry/api';
 import { AuthenticatedRequest } from '../../types';
 
 @Injectable()
@@ -39,6 +40,13 @@ export class CorrelationIdInterceptor implements NestInterceptor {
 
     // Set on response so the caller can correlate
     response.setHeader('X-Correlation-ID', id);
+
+    // Attach correlation ID to the active OpenTelemetry span
+    const activeSpan = trace.getActiveSpan();
+    if (activeSpan) {
+      activeSpan.setAttribute('correlation.id', id);
+      activeSpan.setAttribute('http.route', request.path);
+    }
 
     return next.handle();
   }

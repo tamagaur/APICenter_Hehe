@@ -17,6 +17,7 @@ import {
 } from '@nestjs/terminus';
 import { KafkaService } from '../kafka/kafka.service';
 import { RegistryService } from '../registry/registry.service';
+import { ExternalService } from '../external/external.service';
 
 @Controller('health')
 export class HealthController {
@@ -24,6 +25,7 @@ export class HealthController {
     private readonly health: HealthCheckService,
     private readonly kafka: KafkaService,
     private readonly registry: RegistryService,
+    private readonly externalService: ExternalService,
   ) {}
 
   /**
@@ -47,6 +49,7 @@ export class HealthController {
       () => this.processCheck(),
       () => this.kafkaCheck(),
       () => this.registryCheck(),
+      () => this.circuitBreakerCheck(),
     ]);
   }
 
@@ -87,6 +90,24 @@ export class HealthController {
       registry: {
         status: 'up',
         registeredServices: this.registry.count(),
+      },
+    };
+  }
+
+  private async circuitBreakerCheck(): Promise<HealthIndicatorResult> {
+    const stats = this.externalService.getAllBreakerStats();
+    const openBreakers = stats.filter((s) => s.state === 'OPEN');
+
+    return {
+      circuitBreakers: {
+        status: openBreakers.length > 0 ? 'down' : 'up',
+        total: stats.length,
+        open: openBreakers.length,
+        breakers: stats.map((s) => ({
+          name: s.name,
+          state: s.state,
+          failureCount: s.failureCount,
+        })),
       },
     };
   }

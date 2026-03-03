@@ -11,8 +11,35 @@
 
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { Kafka, logLevel, Producer, Consumer } from 'kafkajs';
+import { ZodSchema } from 'zod';
 import { ConfigService } from '../config/config.service';
 import { LoggerService } from '../shared/logger.service';
+import { TOPICS } from './topics';
+import {
+  GatewayRequestEventSchema,
+  GatewayResponseEventSchema,
+  GatewayErrorEventSchema,
+  AuditLogEventSchema,
+  RegistryServiceRegisteredEventSchema,
+  RegistryServiceDeregisteredEventSchema,
+  TribeRequestEventSchema,
+  TribeResponseEventSchema,
+} from './schemas';
+
+/**
+ * Maps each Kafka topic to its Zod validation schema.
+ * Topics not listed here are published without validation.
+ */
+const TOPIC_SCHEMAS: Record<string, ZodSchema> = {
+  [TOPICS.GATEWAY_REQUEST]: GatewayRequestEventSchema,
+  [TOPICS.GATEWAY_RESPONSE]: GatewayResponseEventSchema,
+  [TOPICS.GATEWAY_ERROR]: GatewayErrorEventSchema,
+  [TOPICS.AUDIT_LOG]: AuditLogEventSchema,
+  [TOPICS.SERVICE_REGISTERED]: RegistryServiceRegisteredEventSchema,
+  [TOPICS.SERVICE_DEREGISTERED]: RegistryServiceDeregisteredEventSchema,
+  [TOPICS.TRIBE_REQUEST]: TribeRequestEventSchema,
+  [TOPICS.TRIBE_RESPONSE]: TribeResponseEventSchema,
+};
 
 @Injectable()
 export class KafkaService implements OnModuleInit, OnModuleDestroy {
@@ -66,11 +93,24 @@ export class KafkaService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Publish an event to a Kafka topic.
+   * If a Zod schema exists for the topic, the payload is validated first.
    * @param topic   - One of the topics defined in kafka/topics.ts
    * @param payload - Arbitrary JSON-serializable data
    * @param key     - Optional partition key (e.g. tribeId) for ordering
+   * @throws Error if payload fails Zod validation
    */
   async publish(topic: string, payload: Record<string, unknown>, key?: string): Promise<void> {
+    // ---- Schema validation ----
+    const schema = TOPIC_SCHEMAS[topic];
+    if (schema) {
+      const result = schema.safeParse(payload);
+      if (!result.success) {
+        const errorMsg = `Kafka schema validation failed for topic '${topic}': ${result.error.message}`;
+        this.logger.error(errorMsg, undefined, 'KafkaService');
+        throw new Error(errorMsg);
+      }
+    }
+
     await this.producer.send({
       topic,
       messages: [

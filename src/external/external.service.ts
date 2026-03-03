@@ -14,7 +14,8 @@ import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { ConfigService } from '../config/config.service';
 import { LoggerService } from '../shared/logger.service';
 import { KafkaService } from '../kafka/kafka.service';
-import { CircuitBreaker } from '../shared/circuit-breaker';
+import { MetricsService } from '../metrics/metrics.service';
+import { CircuitBreaker, CircuitState } from '../shared/circuit-breaker';
 import { BadGatewayError, NotFoundError, ServiceUnavailableError } from '../shared/errors';
 import { ExternalApiConfig, ExternalApiConfigMap, ExternalCallOptions } from '../types';
 import { externalApis } from './apis';
@@ -30,6 +31,7 @@ export class ExternalService implements OnModuleInit {
     private readonly config: ConfigService,
     private readonly logger: LoggerService,
     private readonly kafka: KafkaService,
+    private readonly metrics: MetricsService,
   ) {
     this.apis = externalApis;
   }
@@ -55,6 +57,18 @@ export class ExternalService implements OnModuleInit {
 
   getApiConfig(name: string): ExternalApiConfig | undefined {
     return this.apis[name];
+  }
+
+  // ─── Circuit Breaker Management ──────────────────────────────────────────────
+
+  /** Get stats for all circuit breakers (used by /health/ready and admin) */
+  getAllBreakerStats() {
+    return Array.from(this.breakers.values()).map((b) => b.getStats());
+  }
+
+  /** Get a specific circuit breaker by API name (used by admin reset endpoint) */
+  getBreaker(apiName: string): CircuitBreaker | undefined {
+    return this.breakers.get(apiName);
   }
 
   // ─── Proxied call ────────────────────────────────────────────────────────────
@@ -145,6 +159,31 @@ export class ExternalService implements OnModuleInit {
     const breaker = new CircuitBreaker(name, this.logger, {
       failureThreshold: 5,
       resetTimeoutMs: 30_000,
+      onStateChange: (breakerName, from, to) => {
+        // Update Prometheus gauge
+        this.metrics.setCircuitBreakerState(breakerName, to);
+
+        // Publish Kafka events on OPEN and CLOSED transitions
+        if (to === CircuitState.OPEN) {
+          this.kafka
+            .publish(TOPICS.GATEWAY_ERROR, {
+              event: 'circuit_breaker_opened',
+              apiName: breakerName,
+              previousState: from,
+              timestamp: new Date().toISOString(),
+            })
+            .catch(() => {});
+        } else if (to === CircuitState.CLOSED) {
+          this.kafka
+            .publish(TOPICS.GATEWAY_RESPONSE, {
+              event: 'circuit_breaker_closed',
+              apiName: breakerName,
+              previousState: from,
+              timestamp: new Date().toISOString(),
+            })
+            .catch(() => {});
+        }
+      },
     });
     this.breakers.set(name, breaker);
 

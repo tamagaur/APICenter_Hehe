@@ -25,6 +25,7 @@ import { RegistryModule } from './registry/registry.module';
 import { TribesModule } from './tribes/tribes.module';
 import { ExternalModule } from './external/external.module';
 import { HealthModule } from './health/health.module';
+import { MetricsModule } from './metrics/metrics.module';
 import { SecurityMiddleware } from './shared/middleware/security.middleware';
 import { MorganMiddleware } from './shared/middleware/morgan.middleware';
 
@@ -45,6 +46,9 @@ import { MorganMiddleware } from './shared/middleware/morgan.middleware';
 
     // ---- Shared utilities (logger, errors, validators) ----
     SharedModule,
+
+    // ---- Observability ----
+    MetricsModule,
 
     // ---- Feature modules ----
     KafkaModule,
