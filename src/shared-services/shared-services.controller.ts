@@ -21,26 +21,26 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import { RegistryService } from '../registry/registry.service';
-import { DescopeAuthGuard } from '../auth/guards/descope-auth.guard';
-import { DescopeService } from '../auth/descope.service';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { AuthService } from '../auth/auth.service';
 import { LoggerService } from '../shared/logger.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { ProxyHandler } from '../shared/proxy-handler';
 import { AuthenticatedRequest } from '../types';
 
 @Controller('shared')
-@UseGuards(DescopeAuthGuard)
+@UseGuards(JwtAuthGuard)
 export class SharedServicesController implements OnModuleDestroy {
   private readonly handler: ProxyHandler;
 
   constructor(
     registry: RegistryService,
-    descope: DescopeService,
+    auth: AuthService,
     logger: LoggerService,
     metrics: MetricsService,
   ) {
     this.handler = new ProxyHandler(
-      { registry, descope, logger, metrics },
+      { registry, auth, logger, metrics },
       { namespace: 'shared', pathPrefix: '/api/v1/shared' },
     );
   }
@@ -78,3 +78,4 @@ export class SharedServicesController implements OnModuleDestroy {
     await this.handler.proxyRequest(serviceId, req, res);
   }
 }
+

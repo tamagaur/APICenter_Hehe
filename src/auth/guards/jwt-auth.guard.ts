@@ -1,25 +1,30 @@
 // =============================================================================
-// src/auth/guards/descope-auth.guard.ts — JWT authentication guard
+// src/auth/guards/jwt-auth.guard.ts — Provider-agnostic JWT authentication guard
 // =============================================================================
-// NestJS guard that validates the incoming Bearer JWT via Descope.
+// NestJS guard that validates an incoming Bearer JWT using the AuthService,
+// which in turn delegates to the configured AuthProvider (Keycloak or DevJwt).
 //
-// REPLACES: Express descopeAuth.middleware()
-// NestJS ADVANTAGE: Guards run AFTER middleware but BEFORE interceptors,
-// pipes, and the controller. They return true/false to allow/deny access.
-// They support DI and can be applied globally, per-controller, or per-route.
+// REPLACES: src/auth/guards/descope-auth.guard.ts (Descope-specific guard)
+//
+// On success, attaches the normalised JwtClaims to:
+//   req.user     — the full claims object
+//   req.tribeId  — the service/tribe identifier from the claims
+//
+// Apply per-controller:  @UseGuards(JwtAuthGuard)
+// Apply per-route:       @UseGuards(JwtAuthGuard) on a method
 // =============================================================================
 
 import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
 import { Request } from 'express';
-import { DescopeService } from '../descope.service';
+import { AuthService } from '../auth.service';
 import { LoggerService } from '../../shared/logger.service';
 import { UnauthorizedError } from '../../shared/errors';
 import { AuthenticatedRequest } from '../../types';
 
 @Injectable()
-export class DescopeAuthGuard implements CanActivate {
+export class JwtAuthGuard implements CanActivate {
   constructor(
-    private readonly descope: DescopeService,
+    private readonly auth: AuthService,
     private readonly logger: LoggerService,
   ) {}
 
@@ -32,14 +37,17 @@ export class DescopeAuthGuard implements CanActivate {
     }
 
     try {
-      const authInfo = await this.descope.validateToken(token);
-      (request as AuthenticatedRequest).user = authInfo;
-      (request as AuthenticatedRequest).tribeId = authInfo?.token?.tribeId;
+      // Delegate JWT validation to the active AuthProvider (Keycloak / DevJwt)
+      const claims = await this.auth.validateToken(token);
+
+      // Attach normalised claims so controllers and downstream guards can read them
+      (request as AuthenticatedRequest).user = claims;
+      (request as AuthenticatedRequest).tribeId = claims.tribeId;
       return true;
     } catch (_err) {
       this.logger.warn(
         `Token validation failed from ${request.ip} on ${request.path}`,
-        'DescopeAuthGuard',
+        'JwtAuthGuard',
       );
       throw new UnauthorizedError('Invalid or expired token');
     }

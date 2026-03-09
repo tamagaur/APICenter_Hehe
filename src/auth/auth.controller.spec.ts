@@ -3,10 +3,11 @@
 // =============================================================================
 // Verifies token issuance and refresh endpoints, including the fix
 // that both responses now include `refreshToken`.
+// Tests are provider-agnostic — they mock AuthService, not Descope directly.
 // =============================================================================
 
 import { AuthController } from './auth.controller';
-import { DescopeService } from './descope.service';
+import { AuthService } from './auth.service';
 import { RegistryService } from '../registry/registry.service';
 import { LoggerService } from '../shared/logger.service';
 import { KafkaService } from '../kafka/kafka.service';
@@ -15,9 +16,10 @@ import { AuthenticatedRequest } from '../types';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-const mockDescope: Partial<DescopeService> = {
+const mockAuth: Partial<AuthService> = {
   issueToken: jest.fn(),
   refreshToken: jest.fn(),
+  getJwksJson: jest.fn(),
 };
 
 const mockRegistry: Partial<RegistryService> = {
@@ -36,7 +38,7 @@ const mockKafka: Partial<KafkaService> = {
 };
 
 function fakeReq(overrides: Partial<AuthenticatedRequest> = {}): AuthenticatedRequest {
-  return { correlationId: 'corr-1' } as AuthenticatedRequest;
+  return { correlationId: 'corr-1', ...overrides } as AuthenticatedRequest;
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -47,7 +49,7 @@ describe('AuthController', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     controller = new AuthController(
-      mockDescope as DescopeService,
+      mockAuth as AuthService,
       mockRegistry as RegistryService,
       mockLogger as LoggerService,
       mockKafka as KafkaService,
@@ -68,9 +70,10 @@ describe('AuthController', () => {
         consumes: [],
       });
       (mockRegistry.validateSecret as jest.Mock).mockResolvedValue(true);
-      (mockDescope.issueToken as jest.Mock).mockResolvedValue({
-        sessionJwt: 'access-jwt',
-        refreshJwt: 'refresh-jwt',
+      // AuthService.issueToken returns IssuedToken shape
+      (mockAuth.issueToken as jest.Mock).mockResolvedValue({
+        accessToken: 'access-jwt',
+        refreshToken: 'refresh-jwt',
         expiresIn: 3600,
       });
 
@@ -82,17 +85,17 @@ describe('AuthController', () => {
       expect(result.data.expiresIn).toBe(3600);
     });
 
-    it('returns refreshToken as null when Descope omits it', async () => {
+    it('returns refreshToken as null when provider omits it', async () => {
       (mockRegistry.get as jest.Mock).mockReturnValue({
         serviceId: 'svc-alpha',
         requiredScopes: [],
         consumes: [],
       });
       (mockRegistry.validateSecret as jest.Mock).mockResolvedValue(true);
-      (mockDescope.issueToken as jest.Mock).mockResolvedValue({
-        sessionJwt: 'access-jwt',
+      (mockAuth.issueToken as jest.Mock).mockResolvedValue({
+        accessToken: 'access-jwt',
+        refreshToken: null,
         expiresIn: 3600,
-        // no refreshJwt
       });
 
       const result = await controller.issueToken(dto, fakeReq());
@@ -119,9 +122,9 @@ describe('AuthController', () => {
         consumes: [],
       });
       (mockRegistry.validateSecret as jest.Mock).mockResolvedValue(true);
-      (mockDescope.issueToken as jest.Mock).mockResolvedValue({
-        sessionJwt: 'access-jwt',
-        refreshJwt: 'refresh-jwt',
+      (mockAuth.issueToken as jest.Mock).mockResolvedValue({
+        accessToken: 'access-jwt',
+        refreshToken: 'refresh-jwt',
         expiresIn: 3600,
       });
 
@@ -148,12 +151,10 @@ describe('AuthController', () => {
 
   describe('refreshToken()', () => {
     it('returns accessToken AND refreshToken', async () => {
-      (mockDescope.refreshToken as jest.Mock).mockResolvedValue({
-        data: {
-          sessionJwt: 'new-access',
-          refreshJwt: 'new-refresh',
-          expiresIn: 3600,
-        },
+      (mockAuth.refreshToken as jest.Mock).mockResolvedValue({
+        accessToken: 'new-access',
+        refreshToken: 'new-refresh',
+        expiresIn: 3600,
       });
 
       const result = await controller.refreshToken(
@@ -165,12 +166,11 @@ describe('AuthController', () => {
       expect(result.data.refreshToken).toBe('new-refresh');
     });
 
-    it('returns refreshToken as null when Descope omits it', async () => {
-      (mockDescope.refreshToken as jest.Mock).mockResolvedValue({
-        data: {
-          sessionJwt: 'new-access',
-          expiresIn: 3600,
-        },
+    it('returns refreshToken as null when provider omits it', async () => {
+      (mockAuth.refreshToken as jest.Mock).mockResolvedValue({
+        accessToken: 'new-access',
+        refreshToken: null,
+        expiresIn: 3600,
       });
 
       const result = await controller.refreshToken(
@@ -181,4 +181,25 @@ describe('AuthController', () => {
       expect(result.data.refreshToken).toBeNull();
     });
   });
+
+  // =========================================================================
+  // GET /auth/.well-known/jwks.json
+  // =========================================================================
+
+  describe('getJwks()', () => {
+    it('returns JWKS when provider supports in-process JWKS (DevJwtProvider)', () => {
+      const mockJwks = { keys: [{ kty: 'RSA', kid: 'dev-key-1', use: 'sig', alg: 'RS256' }] };
+      (mockAuth.getJwksJson as jest.Mock).mockReturnValue(mockJwks);
+
+      const result = controller.getJwks();
+      expect(result).toEqual(mockJwks);
+    });
+
+    it('throws NotFoundException when provider does not serve JWKS (KeycloakProvider)', () => {
+      (mockAuth.getJwksJson as jest.Mock).mockReturnValue(null);
+
+      expect(() => controller.getJwks()).toThrow();
+    });
+  });
 });
+

@@ -8,7 +8,7 @@
 
 import { ProxyHandler, ProxyHandlerDeps, ProxyOptions, GoneError } from './proxy-handler';
 import { RegistryService } from '../registry/registry.service';
-import { DescopeService } from '../auth/descope.service';
+import { AuthService } from '../auth/auth.service';
 import { LoggerService } from '../shared/logger.service';
 import { MetricsService } from '../metrics/metrics.service';
 import {
@@ -38,9 +38,10 @@ function createMockDeps(): ProxyHandlerDeps {
       validateSecret: jest.fn(),
       onCacheInvalidation: jest.fn().mockReturnValue(() => {}),
     } as unknown as RegistryService,
-    descope: {
+    // Use AuthService mock (provider-agnostic, replaces DescopeService)
+    auth: {
       checkScopes: jest.fn().mockReturnValue([]),
-    } as unknown as DescopeService,
+    } as unknown as AuthService,
     logger: {
       info: jest.fn(),
       warn: jest.fn(),
@@ -355,7 +356,7 @@ describe('ProxyHandler', () => {
 
     it('throws ForbiddenError when caller lacks required scopes', async () => {
       (deps.registry.getRequiredScopes as jest.Mock).mockReturnValue(['admin']);
-      (deps.descope.checkScopes as jest.Mock).mockReturnValue(['admin']);
+      (deps.auth.checkScopes as jest.Mock).mockReturnValue(['admin']);
 
       await expect(
         handler.proxyRequest('locked-svc', fakeReq(), fakeRes()),
@@ -364,7 +365,7 @@ describe('ProxyHandler', () => {
 
     it('allows request when caller has all required scopes', async () => {
       (deps.registry.getRequiredScopes as jest.Mock).mockReturnValue(['read']);
-      (deps.descope.checkScopes as jest.Mock).mockReturnValue([]); // no missing scopes
+      (deps.auth.checkScopes as jest.Mock).mockReturnValue([]); // no missing scopes
 
       await handler.proxyRequest('locked-svc', fakeReq(), fakeRes());
 

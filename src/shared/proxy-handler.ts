@@ -14,7 +14,7 @@
 import { Response } from 'express';
 import { createProxyMiddleware, Options } from 'http-proxy-middleware';
 import { RegistryService } from '../registry/registry.service';
-import { DescopeService } from '../auth/descope.service';
+import { AuthService } from '../auth/auth.service';
 import { LoggerService } from '../shared/logger.service';
 import { MetricsService } from '../metrics/metrics.service';
 import { CircuitBreaker } from '../shared/circuit-breaker';
@@ -42,7 +42,8 @@ export class GoneError extends NotFoundError {
 
 export interface ProxyHandlerDeps {
   registry: RegistryService;
-  descope: DescopeService;
+  /** Provider-agnostic auth service (replaces DescopeService) */
+  auth: AuthService;
   logger: LoggerService;
   metrics: MetricsService;
 }
@@ -169,7 +170,7 @@ export class ProxyHandler {
 
     const requiredScopes = this.deps.registry.getRequiredScopes(targetServiceId);
     if (requiredScopes.length > 0 && req.user) {
-      const missingScopes = this.deps.descope.checkScopes(req, requiredScopes);
+      const missingScopes = this.deps.auth.checkScopes(req, requiredScopes);
       if (missingScopes.length > 0) {
         throw new ForbiddenError(
           `Insufficient scopes for '${targetServiceId}'. Missing: ${missingScopes.join(', ')}`,

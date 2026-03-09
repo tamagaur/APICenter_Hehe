@@ -10,6 +10,7 @@
 // =============================================================================
 
 import { Request } from 'express';
+import { JwtClaims } from '../auth/auth-provider.interface';
 
 // ---------------------------------------------------------------------------
 // Express request extensions (used inside NestJS's Express adapter)
@@ -18,31 +19,21 @@ import { Request } from 'express';
 /**
  * Extended Express Request that includes service authentication info
  * and distributed tracing fields.
- * After Descope middleware validates the JWT, these fields are attached.
+ * After JwtAuthGuard validates the Bearer JWT, these fields are attached.
+ * The user field now carries the provider-agnostic JwtClaims (not Descope-specific).
  */
 export interface AuthenticatedRequest extends Request {
-  /** Decoded Descope session data (JWT claims) */
-  user?: DescopeSession;
-  /** The service/tribe ID extracted from the JWT's custom claims */
+  /** Normalised JWT claims attached by JwtAuthGuard after token validation */
+  user?: JwtClaims;
+  /** The service/tribe ID extracted from the JWT's tribeId claim */
   tribeId?: string;
   /** Unique correlation ID for distributed request tracing */
   correlationId?: string;
 }
 
 // ---------------------------------------------------------------------------
-// Descope / Authentication types
+// Authentication types
 // ---------------------------------------------------------------------------
-
-/** Decoded Descope session attached to req.user after token validation */
-export interface DescopeSession {
-  token?: {
-    tribeId?: string;
-    permissions?: string[];
-    scopes?: string[];
-    [key: string]: unknown;
-  };
-  [key: string]: unknown;
-}
 
 /** Response returned when a service token is successfully issued */
 export interface TokenResponse {
