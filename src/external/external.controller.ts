@@ -4,7 +4,7 @@
 // NestJS controller that exposes third-party API proxying via circuit breakers.
 //
 // REPLACES: Express externalRouter (router.ts external routes)
-// NestJS ADVANTAGE: @UseGuards(DescopeAuthGuard) applied at controller level.
+// NestJS ADVANTAGE: @UseGuards(JwtAuthGuard) applied at controller level.
 // DTOs validated by the global ValidationPipe.
 //
 // ENDPOINTS:
@@ -15,12 +15,12 @@
 import { Controller, Get, All, Req, Res, Param, UseGuards } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { ExternalService } from './external.service';
-import { DescopeAuthGuard } from '../auth/guards/descope-auth.guard';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { LoggerService } from '../shared/logger.service';
 import { AuthenticatedRequest } from '../types';
 
 @Controller('external')
-@UseGuards(DescopeAuthGuard)
+@UseGuards(JwtAuthGuard)
 export class ExternalController {
   constructor(
     private readonly externalService: ExternalService,

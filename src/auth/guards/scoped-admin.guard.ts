@@ -3,7 +3,8 @@
 // =============================================================================
 // Dual-mode guard for admin endpoints:
 //   1. LEGACY: Accepts `X-Platform-Secret` header (same as PlatformAdminGuard)
-//   2. NEW:    Accepts a valid Descope JWT with `platform:admin` scope
+//   2. NEW:    Accepts a valid JWT with `platform:admin` scope
+//              (validated via the configured AuthProvider — Keycloak or DevJwt)
 //
 // Both modes run in parallel — either one succeeds, the request is allowed.
 // This enables a gradual migration: services switch to JWT-based admin auth
@@ -12,12 +13,14 @@
 //
 // Once all callers use JWT scopes, PlatformAdminGuard and the legacy branch
 // here can be removed, and this guard becomes the sole admin gate.
+//
+// REPLACES: Descope-specific ScopedAdminGuard (validates via AuthService now)
 // =============================================================================
 
 import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
 import { Request } from 'express';
 import { ConfigService } from '../../config/config.service';
-import { DescopeService } from '../descope.service';
+import { AuthService } from '../auth.service';
 import { LoggerService } from '../../shared/logger.service';
 import { UnauthorizedError } from '../../shared/errors';
 import { AuthenticatedRequest } from '../../types';
@@ -28,7 +31,7 @@ const ADMIN_SCOPE = 'platform:admin';
 export class ScopedAdminGuard implements CanActivate {
   constructor(
     private readonly config: ConfigService,
-    private readonly descope: DescopeService,
+    private readonly auth: AuthService,
     private readonly logger: LoggerService,
   ) {}
 
@@ -48,18 +51,19 @@ export class ScopedAdminGuard implements CanActivate {
       // Secret provided but wrong — fall through to JWT check (don't reject yet)
     }
 
-    // ── Path 2: JWT with admin scope ───────────────────────────────────────
+    // ── Path 2: JWT with platform:admin scope ──────────────────────────────
+    // Validation is delegated to AuthService → AuthProvider (Keycloak or DevJwt)
     const token = request.headers.authorization?.split(' ')[1];
     if (token) {
       try {
-        const authInfo = await this.descope.validateToken(token);
-        const scopes: string[] =
-          authInfo?.token?.scopes || authInfo?.token?.permissions || [];
+        const claims = await this.auth.validateToken(token);
+        // Use AuthService.mergeCallerScopes to avoid duplicating the scopes+permissions merge
+        const scopes = this.auth.mergeCallerScopes(claims);
 
         if (scopes.includes(ADMIN_SCOPE)) {
-          // Attach auth info to request for downstream use
-          (request as AuthenticatedRequest).user = authInfo;
-          (request as AuthenticatedRequest).tribeId = authInfo?.token?.tribeId;
+          // Attach claims to request for downstream use
+          (request as AuthenticatedRequest).user = claims;
+          (request as AuthenticatedRequest).tribeId = claims.tribeId;
           this.logger.debug(
             `Admin access via JWT scope '${ADMIN_SCOPE}' from ${request.ip}`,
             'ScopedAdminGuard',
@@ -85,3 +89,4 @@ export class ScopedAdminGuard implements CanActivate {
     );
   }
 }
+

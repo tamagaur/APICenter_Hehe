@@ -26,10 +26,50 @@ export class ConfigService implements OnModuleInit {
     credentials: true,
   };
 
-  // ---- Descope (Authentication & Authorization) ----
-  readonly descope = {
-    projectId: process.env.DESCOPE_PROJECT_ID || '',
-    managementKey: process.env.DESCOPE_MANAGEMENT_KEY || '',
+  // ---- Auth Provider selection ----
+  // AUTH_PROVIDER=keycloak  → KeycloakProvider (production)
+  // AUTH_PROVIDER=dev-jwt   → DevJwtProvider   (local dev / CI) [default]
+  readonly authProvider: string = process.env.AUTH_PROVIDER || 'dev-jwt';
+
+  // ---- Keycloak (production AuthProvider) ----
+  // OIDC/JWKS-backed authentication & authorisation via Keycloak.
+  // In production, run Keycloak behind Envoy/Ingress with JWT pre-verification.
+  // Client secrets should be stored in Vault / cloud KMS and loaded via
+  // SecretsService (AWS Secrets Manager) at boot time.
+  readonly keycloak = {
+    /** Base URL of the Keycloak server, e.g. https://auth.example.com */
+    baseUrl: process.env.KEYCLOAK_BASE_URL || 'http://localhost:8080',
+    /** Keycloak realm name */
+    realm: process.env.KEYCLOAK_REALM || 'api-center',
+    /** JWKS endpoint — defaults to {baseUrl}/realms/{realm}/protocol/openid-connect/certs */
+    jwksUri:
+      process.env.KEYCLOAK_JWKS_URI ||
+      `${process.env.KEYCLOAK_BASE_URL || 'http://localhost:8080'}/realms/${process.env.KEYCLOAK_REALM || 'api-center'}/protocol/openid-connect/certs`,
+    /** Token endpoint — defaults to {baseUrl}/realms/{realm}/protocol/openid-connect/token */
+    tokenEndpoint: process.env.KEYCLOAK_TOKEN_ENDPOINT || '',
+    /** Expected issuer claim in incoming tokens (optional but recommended) */
+    issuer: process.env.KEYCLOAK_ISSUER || '',
+    /** Expected audience claim in incoming tokens (optional) */
+    audience: process.env.KEYCLOAK_AUDIENCE || '',
+    /** Default client ID used for the refresh_token grant */
+    refreshClientId: process.env.KEYCLOAK_REFRESH_CLIENT_ID || 'api-center',
+    /** Default client secret (fallback when per-service secret is not set) */
+    defaultClientSecret: process.env.KEYCLOAK_DEFAULT_CLIENT_SECRET || '',
+  };
+
+  // ---- DevJwt (lightweight developer / CI AuthProvider) ----
+  // Generates an ephemeral RS256 key pair at startup; signs and verifies JWTs
+  // in-process.  DO NOT use in production — the key is lost on restart.
+  readonly devJwt = {
+    /** Issuer claim embedded in every token issued by DevJwtProvider */
+    issuer: process.env.DEV_JWT_ISSUER || 'api-center-dev',
+    /** Access token lifetime in seconds (default: 3600) */
+    tokenTtlSeconds: parseInt(process.env.DEV_JWT_TTL_SECONDS || '3600', 10),
+    /**
+     * Refresh token lifetime multiplier relative to access token TTL.
+     * e.g. 24 means the refresh token lives 24× longer than the access token.
+     */
+    refreshTtlMultiplier: parseInt(process.env.DEV_JWT_REFRESH_TTL_MULTIPLIER || '24', 10),
   };
 
   // ---- Kafka (Event Streaming) ----
@@ -101,9 +141,36 @@ export class ConfigService implements OnModuleInit {
       errors.push('PLATFORM_ADMIN_SECRET must be set in production');
     }
 
-    // Descope credentials
-    if (!this.descope.projectId) {
-      warnings.push('DESCOPE_PROJECT_ID is not set — auth endpoints will fail');
+    // Validate auth provider selection
+    const validProviders = ['keycloak', 'dev-jwt'];
+    if (!validProviders.includes(this.authProvider)) {
+      errors.push(`AUTH_PROVIDER must be one of: ${validProviders.join(', ')} (got '${this.authProvider}')`);
+    }
+
+    // Keycloak-specific validation
+    if (this.authProvider === 'keycloak') {
+      const isLocalhost = (() => {
+        try {
+          return new URL(this.keycloak.baseUrl).hostname === 'localhost';
+        } catch {
+          return false;
+        }
+      })();
+      if (isLocalhost) {
+        if (this.isProduction) {
+          errors.push('KEYCLOAK_BASE_URL must be set to a production Keycloak URL');
+        } else {
+          warnings.push('KEYCLOAK_BASE_URL still points to localhost');
+        }
+      }
+      if (!this.keycloak.issuer && this.isProduction) {
+        warnings.push('KEYCLOAK_ISSUER is not set — token issuer validation is disabled');
+      }
+    }
+
+    // DevJwt in production is a hard error
+    if (this.authProvider === 'dev-jwt' && this.isProduction) {
+      errors.push('AUTH_PROVIDER=dev-jwt must NOT be used in production. Use AUTH_PROVIDER=keycloak');
     }
 
     // Kafka brokers should not be defaults in production

@@ -1,11 +1,15 @@
 // =============================================================================
 // Unit tests — ScopedAdminGuard (dual-mode admin authentication)
 // =============================================================================
+// Tests are provider-agnostic — they mock AuthService, not Descope directly.
+// This ensures the guard works identically regardless of whether the active
+// provider is KeycloakProvider or DevJwtProvider.
+// =============================================================================
 
 import { ExecutionContext } from '@nestjs/common';
 import { ScopedAdminGuard } from './scoped-admin.guard';
 import { ConfigService } from '../../config/config.service';
-import { DescopeService } from '../descope.service';
+import { AuthService } from '../auth.service';
 import { LoggerService } from '../../shared/logger.service';
 import { UnauthorizedError } from '../../shared/errors';
 
@@ -14,9 +18,13 @@ const mockConfig = {
   platformAdminSecret: 'test-secret-123',
 } as Partial<ConfigService>;
 
-const mockDescope = {
+const mockAuth = {
   validateToken: jest.fn(),
-} as Partial<DescopeService>;
+  mergeCallerScopes: jest.fn((claims: Record<string, unknown>) => [
+    ...((claims['scopes'] as string[]) ?? []),
+    ...((claims['permissions'] as string[]) ?? []),
+  ]),
+} as Partial<AuthService>;
 
 const mockLogger = {
   debug: jest.fn(),
@@ -45,7 +53,7 @@ describe('ScopedAdminGuard', () => {
     jest.clearAllMocks();
     guard = new ScopedAdminGuard(
       mockConfig as ConfigService,
-      mockDescope as DescopeService,
+      mockAuth as AuthService,
       mockLogger as LoggerService,
     );
   });
@@ -66,19 +74,39 @@ describe('ScopedAdminGuard', () => {
   // ── JWT scope path ─────────────────────────────────────────────────────
 
   it('should allow access with valid JWT containing platform:admin scope', async () => {
-    (mockDescope.validateToken as jest.Mock).mockResolvedValue({
-      token: { scopes: ['platform:admin'], tribeId: 'admin-service' },
+    // AuthService.validateToken returns flat JwtClaims (not nested Descope shape)
+    (mockAuth.validateToken as jest.Mock).mockResolvedValue({
+      sub: 'admin-service',
+      tribeId: 'admin-service',
+      scopes: ['platform:admin'],
+      permissions: [],
     });
 
     const ctx = createMockContext({ authorization: 'Bearer valid-jwt-token' });
     const result = await guard.canActivate(ctx);
     expect(result).toBe(true);
-    expect(mockDescope.validateToken).toHaveBeenCalledWith('valid-jwt-token');
+    expect(mockAuth.validateToken).toHaveBeenCalledWith('valid-jwt-token');
+  });
+
+  it('should allow access with platform:admin in permissions (not scopes)', async () => {
+    (mockAuth.validateToken as jest.Mock).mockResolvedValue({
+      sub: 'admin-service',
+      tribeId: 'admin-service',
+      scopes: [],
+      permissions: ['platform:admin'],
+    });
+
+    const ctx = createMockContext({ authorization: 'Bearer valid-jwt-token' });
+    const result = await guard.canActivate(ctx);
+    expect(result).toBe(true);
   });
 
   it('should reject JWT without platform:admin scope', async () => {
-    (mockDescope.validateToken as jest.Mock).mockResolvedValue({
-      token: { scopes: ['tribe:read'], tribeId: 'some-service' },
+    (mockAuth.validateToken as jest.Mock).mockResolvedValue({
+      sub: 'some-service',
+      tribeId: 'some-service',
+      scopes: ['tribe:read'],
+      permissions: [],
     });
 
     const ctx = createMockContext({ authorization: 'Bearer limited-jwt' });
@@ -86,7 +114,7 @@ describe('ScopedAdminGuard', () => {
   });
 
   it('should reject expired/invalid JWT', async () => {
-    (mockDescope.validateToken as jest.Mock).mockRejectedValue(
+    (mockAuth.validateToken as jest.Mock).mockRejectedValue(
       new Error('Token expired'),
     );
 
@@ -97,8 +125,11 @@ describe('ScopedAdminGuard', () => {
   // ── Dual-mode behaviour ────────────────────────────────────────────────
 
   it('should prefer JWT when both secret and JWT are provided', async () => {
-    (mockDescope.validateToken as jest.Mock).mockResolvedValue({
-      token: { scopes: ['platform:admin'], tribeId: 'admin-svc' },
+    (mockAuth.validateToken as jest.Mock).mockResolvedValue({
+      sub: 'admin-svc',
+      tribeId: 'admin-svc',
+      scopes: ['platform:admin'],
+      permissions: [],
     });
 
     const ctx = createMockContext({
@@ -121,7 +152,7 @@ describe('ScopedAdminGuard', () => {
   it('should not allow empty secret to match unconfigured platformAdminSecret', async () => {
     const guardNoSecret = new ScopedAdminGuard(
       { platformAdminSecret: '' } as ConfigService,
-      mockDescope as DescopeService,
+      mockAuth as AuthService,
       mockLogger as LoggerService,
     );
 
@@ -129,3 +160,4 @@ describe('ScopedAdminGuard', () => {
     await expect(guardNoSecret.canActivate(ctx)).rejects.toThrow(UnauthorizedError);
   });
 });
+
